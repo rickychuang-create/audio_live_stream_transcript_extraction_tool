@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# 上傳和輸出檔案
+uploads/
+outputs/
+*.mp4
+*.mp3
+*.txt
+
+# 環境變數
+.env
+.env.local
