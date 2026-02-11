@@ -1,0 +1,21 @@
+# FastAPI 相關
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+python-multipart==0.0.12
+pydantic>=2.9.0
+pydantic-settings>=2.6.0
+
+# 音訊處理
+moviepy==1.0.3
+
+# 語音轉文字
+# 注意：如果安裝失敗，請先執行: pip install --upgrade pip setuptools wheel
+openai-whisper>=20231117
+
+# LLM API 客戶端
+openai>=1.40.0
+anthropic>=0.34.0
+google-generativeai>=0.8.0
+
+# 其他工具
+python-dotenv==1.0.0
