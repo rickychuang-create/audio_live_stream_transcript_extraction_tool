@@ -32,6 +32,11 @@ const FORMATS = [
     label: '精華摘要',
     icon: '📋',
   },
+  {
+    value: 'substack_article',    // Substack 長文格式
+    label: 'Substack 長文',
+    icon: '📝',
+  },
 ];
 
 const FormatSelector = ({ selectedFormats, onFormatChange, disabled }) => {

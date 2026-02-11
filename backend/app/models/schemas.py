@@ -13,6 +13,7 @@ class ContentFormat(str, Enum):
     EMAIL = "email"  # Email 文案
     YT_POST = "yt_post"  # YT 貼文（原為 YT Shorts 腳本）
     SUMMARY = "summary"  # 精華摘要
+    SUBSTACK_ARTICLE = "substack_article"  # Substack 長文
 
 
 class TaskStatus(str, Enum):
