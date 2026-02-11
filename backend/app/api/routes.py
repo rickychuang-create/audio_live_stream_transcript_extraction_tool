@@ -5,6 +5,7 @@
 import asyncio
 import os
 import uuid
+from pathlib import Path
 from typing import List
 import math  # 用於計算切片數量
 from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks
@@ -143,21 +144,32 @@ async def process_file_task(task_id: str, file_id: str, include_timestamps: bool
         
         # 取得檔案路徑
         file_info = files_storage[file_id]
-        video_path = file_info["file_path"]
+        file_path = file_info["file_path"]
+        file_ext = Path(file_path).suffix.lower()
         
-        # 步驟 1: 提取音訊
-        # 說明：先從影片中抽出 MP3，再根據 MP3 來計算長度與後續轉錄
-        tasks_storage[task_id]["progress"] = 10.0
-        tasks_storage[task_id]["message"] = "正在提取音訊..."
-        print(f"[DEBUG] 更新進度: {task_id}, 進度: 10%, 訊息: 正在提取音訊...")
-        
+        # 判斷檔案類型，決定是否需要提取音訊
         audio_service = AudioService()
-        audio_path = audio_service.extract_audio(video_path, file_id)
         
-        # 更新進度：音訊提取完成
-        tasks_storage[task_id]["progress"] = 30.0
-        tasks_storage[task_id]["message"] = "音訊提取完成，正在分析音訊長度..."
-        print(f"[DEBUG] 更新進度: {task_id}, 進度: 30%, 訊息: 音訊提取完成...")
+        if file_ext == ".mp3":
+            # MP3 檔案：直接使用，跳過音訊提取步驟（節省記憶體）
+            audio_path = file_path
+            tasks_storage[task_id]["progress"] = 30.0
+            tasks_storage[task_id]["message"] = "音訊檔案就緒，正在分析音訊長度..."
+            print(f"[DEBUG] 直接使用 MP3 檔案: {audio_path} (task_id={task_id})")
+        elif file_ext == ".mp4":
+            # MP4 檔案：需要提取音訊
+            tasks_storage[task_id]["progress"] = 10.0
+            tasks_storage[task_id]["message"] = "正在提取音訊..."
+            print(f"[DEBUG] 更新進度: {task_id}, 進度: 10%, 訊息: 正在提取音訊...")
+            
+            audio_path = audio_service.extract_audio(file_path, file_id)
+            
+            # 更新進度：音訊提取完成
+            tasks_storage[task_id]["progress"] = 30.0
+            tasks_storage[task_id]["message"] = "音訊提取完成，正在分析音訊長度..."
+            print(f"[DEBUG] 更新進度: {task_id}, 進度: 30%, 訊息: 音訊提取完成...")
+        else:
+            raise ValueError(f"不支援的檔案格式: {file_ext}")
         
         # 取得音訊長度（秒），用來估算後續轉錄進度
         total_duration = audio_service.get_audio_duration(audio_path)

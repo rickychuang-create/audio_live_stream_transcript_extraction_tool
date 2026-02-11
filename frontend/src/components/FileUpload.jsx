@@ -16,11 +16,14 @@ const FileUpload = ({ onUpload, disabled }) => {
    */
   const handleFiles = (files) => {
     const fileArray = Array.from(files).filter(file => 
-      file.type === 'video/mp4' || file.name.endsWith('.mp4')
+      file.type === 'video/mp4' || 
+      file.name.endsWith('.mp4') ||
+      file.type === 'audio/mpeg' ||
+      file.name.endsWith('.mp3')
     );
     
     if (fileArray.length === 0) {
-      alert('請選擇 MP4 格式的檔案');
+      alert('請選擇 MP4 或 MP3 格式的檔案');
       return;
     }
     
@@ -94,7 +97,7 @@ const FileUpload = ({ onUpload, disabled }) => {
         <input
           ref={fileInputRef}
           type="file"
-          accept=".mp4,video/mp4"
+          accept=".mp4,.mp3,video/mp4,audio/mpeg"
           onChange={handleFileInputChange}
           style={{ display: 'none' }}
           disabled={disabled}
@@ -103,9 +106,9 @@ const FileUpload = ({ onUpload, disabled }) => {
         <div className="upload-content">
           <div className="upload-icon">📁</div>
           <p className="upload-text">
-            {isDragging ? '放開以上傳檔案' : '拖放 MP4 檔案到這裡，或點擊選擇檔案'}
+            {isDragging ? '放開以上傳檔案' : '拖放 MP4 或 MP3 檔案到這裡，或點擊選擇檔案'}
           </p>
-          <p className="upload-hint">一次上傳一個 MP4 檔案</p>
+          <p className="upload-hint">一次上傳一個 MP4 或 MP3 檔案</p>
         </div>
       </div>
 

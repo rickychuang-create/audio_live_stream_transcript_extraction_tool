@@ -48,8 +48,8 @@ def validate_file(file: UploadFile) -> Tuple[bool, Optional[str]]:
     Returns:
         Tuple[bool, Optional[str]]: (是否有效, 錯誤訊息)
     """
-    # 檢查檔案類型（只限制副檔名，避免使用者上傳非影音檔）
-    allowed_extensions = {".mp4", ".MP4"}
+    # 檢查檔案類型（支援 MP4 和 MP3，避免使用者上傳非影音檔）
+    allowed_extensions = {".mp4", ".MP4", ".mp3", ".MP3"}
     file_ext = Path(file.filename).suffix if file.filename else ""
     
     if file_ext not in allowed_extensions:
@@ -79,7 +79,7 @@ async def save_uploaded_file(file: UploadFile, file_id: str) -> str:
     Returns:
         str: 儲存的檔案路徑
     """
-    # 取得原始檔案副檔名
+    # 取得原始檔案副檔名（預設為 .mp4，但如果是 MP3 則保留 .mp3）
     file_ext = Path(file.filename).suffix if file.filename else ".mp4"
     
     # 建立儲存路徑

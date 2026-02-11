@@ -21,7 +21,6 @@ import {
  * 系統支援的文案格式代碼清單
  * 必須同時與前端 FormatSelector 的 value 以及後端 ContentFormat Enum 保持一致
  */
-const CONTENT_FORMATS = ['community_post', 'email', 'yt_post', 'summary'];
 
 function App() {
   // 狀態管理
@@ -273,7 +272,7 @@ function App() {
       <div className="container">
         <header className="app-header">
           <h1>🎙️ 語音直播切片工具</h1>
-          <p>將 MP4 轉換為逐字稿，並生成多種格式的文案</p>
+          <p>將 MP4/MP3 轉換為逐字稿，並生成多種格式的文案</p>
         </header>
 
         {/* 輸入模式切換：用 MP4 或 直接貼上逐字稿
@@ -284,7 +283,7 @@ function App() {
             className={`btn ${inputMode === 'file' ? 'btn-primary' : 'btn-secondary'}`}
             onClick={() => setInputMode('file')}
           >
-            用 MP4 轉逐字稿生成
+            上傳檔案轉逐字稿生成
           </button>
           <button
             type="button"
@@ -308,7 +307,7 @@ function App() {
           <>
             {/* 檔案上傳區域 */}
             <div className="card">
-              <h2>步驟 1: 上傳 MP4 檔案</h2>
+              <h2>步驟 1: 上傳 MP4/MP3 檔案</h2>
               <FileUpload
                 onUpload={handleUpload}
                 disabled={!!currentTask}
@@ -479,7 +478,7 @@ function App() {
           <div className="card">
             <h2>直接貼上逐字稿生成文案</h2>
             <p style={{ marginBottom: '10px', color: '#555', fontSize: '14px' }}>
-              已經有逐字稿了嗎？直接把文字貼到下面的框框，選擇要生成的格式，就可以跳過上傳 MP4 的步驟。
+              已經有逐字稿了嗎？直接把文字貼到下面的框框，選擇要生成的格式，就可以跳過上傳 MP4/MP3 的步驟。
             </p>
             {/* 手動貼上逐字稿輸入框 */}
             <textarea
