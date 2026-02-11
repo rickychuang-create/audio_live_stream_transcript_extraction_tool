@@ -21,7 +21,6 @@ import {
  * 系統支援的文案格式代碼清單
  * 必須同時與前端 FormatSelector 的 value 以及後端 ContentFormat Enum 保持一致
  */
-const CONTENT_FORMATS = ['community_post', 'email', 'yt_post', 'summary'];
 
 function App() {
   // 狀態管理
