@@ -51,8 +51,8 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: Optional[str] = None
     GEMINI_API_KEY: Optional[str] = None
     
-    # Whisper 模型配置
-    WHISPER_MODEL: str = "base"  # 可選: tiny, base, small, medium, large
+    # Whisper 模型配置（已棄用，改用 Gemini API，但保留欄位以相容 .env）
+    WHISPER_MODEL: Optional[str] = None  # 已不再使用，保留僅為向後相容，避免 Pydantic 驗證錯誤
     
     # 檔案處理配置
     MAX_FILE_SIZE: int = 500 * 1024 * 1024  # 500MB (單位: bytes)
@@ -63,8 +63,8 @@ class Settings(BaseSettings):
     API_TITLE: str = "語音直播切片工具 API"
     API_VERSION: str = "1.0.0"
     DEBUG: bool = False
-    # 是否啟用標點符號處理（預設關閉，避免模型問題影響主流程）
-    ENABLE_PUNCTUATION: bool = True
+    # 標點符號處理配置（已棄用，Gemini 轉錄時已處理標點符號，保留僅為相容 .env）
+    ENABLE_PUNCTUATION: Optional[bool] = None  # 已不再使用，保留僅為向後相容，避免 Pydantic 驗證錯誤
     
     # LLM 配置
     DEFAULT_LLM_PROVIDER: str = "openai"  # openai、anthropic 或 gemini

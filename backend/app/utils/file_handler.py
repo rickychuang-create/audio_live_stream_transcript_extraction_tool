@@ -48,12 +48,12 @@ def validate_file(file: UploadFile) -> Tuple[bool, Optional[str]]:
     Returns:
         Tuple[bool, Optional[str]]: (是否有效, 錯誤訊息)
     """
-    # 檢查檔案類型（支援 MP4 和 MP3，避免使用者上傳非影音檔）
-    allowed_extensions = {".mp4", ".MP4", ".mp3", ".MP3"}
+    # 檢查檔案類型（只支援 MP3，簡化流程並減少記憶體負擔）
+    allowed_extensions = {".mp3", ".MP3"}
     file_ext = Path(file.filename).suffix if file.filename else ""
     
     if file_ext not in allowed_extensions:
-        return False, f"不支援的檔案格式。僅支援: {', '.join(allowed_extensions)}"
+        return False, f"不支援的檔案格式。僅支援 MP3 格式"
 
     # ⚠️ 目前「不再限制檔案大小」
     # 原本這裡會依照 settings.MAX_FILE_SIZE 檢查檔案大小，

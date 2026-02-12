@@ -5,25 +5,24 @@
 import asyncio
 import os
 import uuid
+import json
 from pathlib import Path
 from typing import List
 import math  # 用於計算切片數量
 from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi.responses import StreamingResponse
 from app.models.schemas import (
     UploadResponse, ProcessRequest, ProcessResponse, GenerateRequest, GenerateResponse,
     TaskStatusResponse, TaskStatus, ContentFormat, GenerateFromTranscriptRequest
 )
 from app.api.upload import handle_upload
-from app.services.audio_service import AudioService
 from app.services.transcription_service import get_transcription_service
 from app.services.content_generator import get_content_generator
-from app.services.punctuation_service import get_punctuation_service
 from app.config import settings
 from app.utils.file_handler import (
     generate_file_id, validate_file, save_uploaded_file,
-    get_file_path, file_exists, get_output_path  # 取得輸出檔案路徑（用於切片與最終逐字稿）
+    get_file_path, file_exists, get_output_path  # 取得輸出檔案路徑
 )
-from moviepy.editor import AudioFileClip  # 用於將整段音訊切成多個小片段
 
 router = APIRouter()
 
@@ -35,10 +34,10 @@ files_storage = {}  # 儲存檔案資訊
 @router.post("/upload", response_model=UploadResponse)
 async def upload_file(file: UploadFile = File(...)):
     """
-    上傳 MP4 檔案
+    上傳 MP3 檔案
     
     Args:
-        file: 上傳的 MP4 檔案
+        file: 上傳的 MP3 檔案
         
     Returns:
         UploadResponse: 上傳結果
@@ -78,7 +77,7 @@ async def upload_file(file: UploadFile = File(...)):
 @router.post("/process", response_model=ProcessResponse)
 async def process_file(request: ProcessRequest, background_tasks: BackgroundTasks):
     """
-    處理檔案：提取音訊並轉換為逐字稿
+    處理檔案：轉換 MP3 為逐字稿（使用 Gemini API）
     
     Args:
         request: 處理請求
@@ -101,7 +100,9 @@ async def process_file(request: ProcessRequest, background_tasks: BackgroundTask
         "status": TaskStatus.PENDING,
         "progress": 0.0,
         "message": "等待處理",
-        "file_id": file_id
+        "file_id": file_id,
+        "transcript_chunks": [],  # 用於儲存串流文字片段
+        "full_transcript": ""  # 完整逐字稿
     }
     
     # 添加調試日誌
@@ -123,13 +124,15 @@ async def process_file(request: ProcessRequest, background_tasks: BackgroundTask
 
 async def process_file_task(task_id: str, file_id: str, include_timestamps: bool):
     """
-    背景任務：處理檔案
+    背景任務：上傳檔案到 Gemini（不執行轉錄，轉錄由 SSE endpoint 處理）
     
     Args:
         task_id: 任務 ID
         file_id: 檔案 ID
-        include_timestamps: 是否包含時間戳記
+        include_timestamps: 是否包含時間戳記（保留參數以相容，但不使用）
     """
+    gemini_file_name = None
+    
     try:
         # 確保任務存在
         if task_id not in tasks_storage:
@@ -139,343 +142,75 @@ async def process_file_task(task_id: str, file_id: str, include_timestamps: bool
         # 更新任務狀態為處理中
         tasks_storage[task_id]["status"] = TaskStatus.PROCESSING
         tasks_storage[task_id]["progress"] = 5.0
-        tasks_storage[task_id]["message"] = "正在準備處理..."
+        tasks_storage[task_id]["message"] = "正在準備上傳..."
         print(f"[DEBUG] 開始處理任務: {task_id}, 進度: 5%")
         
-        # 取得檔案路徑
+        # 取得檔案路徑（現在只支援 MP3）
         file_info = files_storage[file_id]
         file_path = file_info["file_path"]
         file_ext = Path(file_path).suffix.lower()
         
-        # 判斷檔案類型，決定是否需要提取音訊
-        audio_service = AudioService()
+        if file_ext != ".mp3":
+            raise ValueError(f"不支援的檔案格式: {file_ext}，僅支援 MP3")
         
-        if file_ext == ".mp3":
-            # MP3 檔案：直接使用，跳過音訊提取步驟（節省記憶體）
-            audio_path = file_path
-            tasks_storage[task_id]["progress"] = 30.0
-            tasks_storage[task_id]["message"] = "音訊檔案就緒，正在分析音訊長度..."
-            print(f"[DEBUG] 直接使用 MP3 檔案: {audio_path} (task_id={task_id})")
-        elif file_ext == ".mp4":
-            # MP4 檔案：需要提取音訊
-            tasks_storage[task_id]["progress"] = 10.0
-            tasks_storage[task_id]["message"] = "正在提取音訊..."
-            print(f"[DEBUG] 更新進度: {task_id}, 進度: 10%, 訊息: 正在提取音訊...")
-            
-            audio_path = audio_service.extract_audio(file_path, file_id)
-            
-            # 更新進度：音訊提取完成
-            tasks_storage[task_id]["progress"] = 30.0
-            tasks_storage[task_id]["message"] = "音訊提取完成，正在分析音訊長度..."
-            print(f"[DEBUG] 更新進度: {task_id}, 進度: 30%, 訊息: 音訊提取完成...")
-        else:
-            raise ValueError(f"不支援的檔案格式: {file_ext}")
+        audio_path = file_path
+        tasks_storage[task_id]["progress"] = 10.0
+        tasks_storage[task_id]["message"] = "音訊檔案就緒，開始上傳到 Gemini..."
+        print(f"[DEBUG] 使用 MP3 檔案: {audio_path} (task_id={task_id})")
         
-        # 取得音訊長度（秒），用來估算後續轉錄進度
-        total_duration = audio_service.get_audio_duration(audio_path)
-        tasks_storage[task_id]["total_duration"] = total_duration
-        tasks_storage[task_id]["processed_duration"] = 0.0
-        print(f"[DEBUG] 音訊總長度: {total_duration:.2f} 秒 (task_id={task_id})")
-        
-        # 步驟 2: 語音轉文字（這是最耗時的部分）
-        # 說明：我們改成依照「已處理秒數 / 總秒數」來計算 40%~90% 的進度，而不是用模擬
+        # 取得轉錄服務實例（用於上傳檔案）
         transcription_service = get_transcription_service()
         
-        # 如果無法取得音訊長度（例如 0 秒），使用 fallback：保留舊的模擬進度邏輯
-        if not total_duration or total_duration <= 0:
-            print(f"[WARNING] 無法取得音訊長度，使用模擬進度模式 (task_id={task_id})")
-            
-            # 更新進度：開始語音識別
-            tasks_storage[task_id]["progress"] = 40.0
-            tasks_storage[task_id]["message"] = "正在進行語音識別..."
-            print(f"[DEBUG] 更新進度: {task_id}, 進度: 40%, 訊息: 正在進行語音識別...")
-            
-            # === 舊的模擬進度邏輯，保留為 fallback ===
-            transcription_completed = asyncio.Event()
-            
-            async def simulate_transcription_progress():
-                """
-                模擬轉錄進度更新（fallback 模式）
-                從40%逐漸增加到85%，給用戶視覺反饋
-                """
-                current_progress = 40.0
-                max_progress = 85.0  # 最多到85%，等待實際轉錄完成
-                last_logged_progress = 40.0  # 記錄上次打印的進度，用於減少日誌輸出
-                
-                while current_progress < max_progress and not transcription_completed.is_set():
-                    # 每1.5秒增加5-8%的進度
-                    increment = 5.0 + (max_progress - current_progress) * 0.1  # 越接近目標，增量越小
-                    current_progress = min(current_progress + increment, max_progress)
-                    
-                    # 更新任務進度（確保任務仍然存在）
-                    if task_id in tasks_storage and tasks_storage[task_id]["status"] == TaskStatus.PROCESSING:
-                        tasks_storage[task_id]["progress"] = current_progress
-                        tasks_storage[task_id]["message"] = f"正在進行語音識別... {int(current_progress)}%"
-                        
-                        # 只在進度變化超過5%時才打印，減少日誌輸出
-                        if current_progress - last_logged_progress >= 5.0:
-                            print(f"[DEBUG] 模擬進度更新: {task_id}, 進度: {current_progress:.1f}%")
-                            last_logged_progress = current_progress
-                    
-                    # 等待1.5秒後再次更新
-                    await asyncio.sleep(1.5)
-            
-            # 啟動進度模擬任務
-            progress_task = asyncio.create_task(simulate_transcription_progress())
-            
-            try:
-                # 開始轉錄（Whisper 是同步處理，無法獲取中間進度）
-                # 注意：這裡需要在異步函數中運行同步的轉錄操作
-                # 使用 asyncio.to_thread 或 run_in_executor 來避免阻塞事件循環
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(
-                    None,
-                    transcription_service.transcribe,
-                    audio_path,
-                    file_id,
-                    include_timestamps
-                )
-            finally:
-                # 標記轉錄完成，停止進度模擬
-                transcription_completed.set()
-                # 等待進度模擬任務完成（如果還在運行）
-                if not progress_task.done():
-                    progress_task.cancel()
-                    try:
-                        await progress_task
-                    except asyncio.CancelledError:
-                        pass
-            
-            # 轉錄完成，預設使用原始 Whisper 逐字稿作為結果
-            tasks_storage[task_id]["progress"] = 90.0
-            tasks_storage[task_id]["message"] = "語音識別完成"
-            print(f"[DEBUG] 更新進度: {task_id}, 進度: 90%, 訊息: 語音識別完成 (fallback)...")
+        # 上傳檔案到 Gemini（在背景執行緒中執行）
+        tasks_storage[task_id]["progress"] = 20.0
+        tasks_storage[task_id]["message"] = "正在上傳音訊到 Gemini..."
+        print(f"[DEBUG] 開始上傳到 Gemini: task_id={task_id}")
         
-        else:
-            # === 真實進度模式（切片轉錄）：進度從 0% 開始一路跑到 90% ===
-            # 說明：
-            # - 先前的 10% / 30% 僅用來表示「提取音訊」的中間狀態，為了讓整體體感更直覺，
-            #   在真正開始語音識別（切片轉錄）時，會將進度重置為 0%，讓使用者看到「轉錄本身」完整的 0%→90% 過程。
-            tasks_storage[task_id]["progress"] = 0.0
-            tasks_storage[task_id]["processed_duration"] = 0.0
-            tasks_storage[task_id]["message"] = "正在進行語音識別..."
-            print(
-                f"[DEBUG] 更新進度: {task_id}, 進度: 0%, "
-                f"訊息: 正在進行語音識別 (切片真實模式，從 0% 開始)..."
-            )
-
-            # 這裡定義每個切片的長度（秒），可依實際效能調整
-            # 数值越小，進度更新越頻繁，但 Whisper 呼叫次數越多
-            CHUNK_DURATION = 60.0
-
-            # 用於累積所有片段的文字與語言資訊
-            all_texts = []
-            detected_language = None
-            # 標記是否使用了 fallback 模式（整段轉錄）
-            use_fallback_result = False
-
-            # 說明：這裡不再共用同一個 AudioFileClip，而是每個 chunk 各自開啟一次 audio 檔
-            # 以避免在 Windows + ffmpeg 組合下，共用 reader 造成 NoneType stdout 的錯誤
-            num_chunks = max(1, math.ceil(total_duration / CHUNK_DURATION))
-            # 這裡直接從 0% 開始推進到 90%
-            transcription_start_progress = 0.0
-            processed_duration = 0.0
-            last_logged_progress = 0.0
-
-            for index in range(num_chunks):
-                # 計算當前切片的起訖時間（秒）
-                start_time = index * CHUNK_DURATION
-                end_time = min((index + 1) * CHUNK_DURATION, total_duration)
-                chunk_duration = max(0.0, end_time - start_time)
-
-                if chunk_duration <= 0:
-                    continue
-
-                # 為每個切片建立一個暫存音訊檔案
-                chunk_file_id = f"{file_id}_chunk_{index}"
-                chunk_audio_path = get_output_path(chunk_file_id, ".mp3")
-
-                # 額外的診斷資訊：列出當前 chunk 的時間範圍與長度
-                print(
-                    f"[DEBUG] 準備切片: task_id={task_id}, chunk_index={index}, "
-                    f"start={start_time:.2f}s, end={end_time:.2f}s, duration={chunk_duration:.2f}s"
-                )
-
-                # 每個 chunk 各自開啟一次 AudioFileClip，完成後立即關閉
-                try:
-                    with AudioFileClip(audio_path) as audio_clip:
-                        subclip = audio_clip.subclip(start_time, end_time)
-                        subclip.write_audiofile(
-                            chunk_audio_path,
-                            codec="mp3",
-                            bitrate="192k",
-                            verbose=False,
-                            logger=None,
-                        )
-                        subclip.close()
-                except Exception as e:
-                    # 這裡是 moviepy/ffmpeg 在切片時出錯（例如 AttributeError: 'NoneType' object has no attribute 'stdout'）
-                    # 為了避免整個任務失敗，我們會回退到「整段一次轉錄」模式
-                    print(
-                        f"[ERROR] 切片音訊寫入失敗，回退到整段轉錄模式: "
-                        f"task_id={task_id}, file_id={file_id}, chunk_index={index}, error={e}"
-                    )
-                    # 使用整段音訊進行一次性轉錄
-                    loop = asyncio.get_event_loop()
-                    result = await loop.run_in_executor(
-                        None,
-                        transcription_service.transcribe,
-                        audio_path,
-                        file_id,
-                        include_timestamps,
-                    )
-                    # 直接將進度拉到 90%，並更新訊息
-                    tasks_storage[task_id]["processed_duration"] = total_duration
-                    tasks_storage[task_id]["progress"] = 90.0
-                    tasks_storage[task_id]["message"] = "語音識別完成（切片失敗，改用整段轉錄）"
-                    print(
-                        f"[DEBUG] 更新進度: {task_id}, 進度: 90%, "
-                        f"訊息: 語音識別完成（切片失敗，改用整段轉錄）..."
-                    )
-                    # 標記已使用 fallback，並跳出切片迴圈
-                    use_fallback_result = True
-                    break
-
-                # 使用 Whisper 轉錄這個小片段
-                # 說明：每個切片都在背景執行緒中轉錄，避免阻塞事件迴圈
-                loop = asyncio.get_event_loop()
-                chunk_result = await loop.run_in_executor(
-                    None,
-                    transcription_service.transcribe,
-                    chunk_audio_path,
-                    chunk_file_id,
-                    include_timestamps,
-                )
-
-                # 累積文字結果
-                all_texts.append(chunk_result.get("text", ""))
-                if detected_language is None:
-                    detected_language = chunk_result.get("language", "zh")
-
-                # 轉錄完一個切片後，更新「已處理秒數」與進度
-                processed_duration += chunk_duration
-                tasks_storage[task_id]["processed_duration"] = min(processed_duration, total_duration)
-
-                # 依「已處理秒數 / 總秒數」計算進度：
-                # - 從 0% 一路平滑推進到 90%
-                ratio = min(tasks_storage[task_id]["processed_duration"] / total_duration, 1.0)
-                progress = transcription_start_progress + (90.0 - transcription_start_progress) * ratio
-
-                if task_id in tasks_storage and tasks_storage[task_id]["status"] == TaskStatus.PROCESSING:
-                    tasks_storage[task_id]["progress"] = progress
-                    done_minutes = tasks_storage[task_id]["processed_duration"] / 60.0
-                    total_minutes = total_duration / 60.0
-                    tasks_storage[task_id]["message"] = (
-                        "正在進行語音識別... \n"
-                        f"語音總長度：{total_minutes:.1f}分鐘，已完成約 {done_minutes:.1f} / {total_minutes:.1f} 分鐘"
-                    )
-
-                    # 控制日誌輸出頻率：每增加 5% 以上才記錄一次，避免 log 太多
-                    if progress - last_logged_progress >= 5.0:
-                        print(
-                            f"[DEBUG] 切片真實進度更新: task_id={task_id}, "
-                            f"progress={progress:.1f}%, "
-                            f"processed={done_minutes:.1f}/{total_minutes:.1f} 分鐘"
-                        )
-                        last_logged_progress = progress
-
-                # 切片轉錄完成後，可以刪除暫存音訊檔案以節省空間
-                try:
-                    if os.path.exists(chunk_audio_path):
-                        os.remove(chunk_audio_path)
-                except Exception as cleanup_err:
-                    print(f"[WARNING] 無法刪除暫存切片檔案: {chunk_audio_path}, error={cleanup_err}")
-
-            # 如果使用了 fallback 模式（整段轉錄），跳過切片模式的結尾邏輯
-            # 因為 fallback 分支已經設定好 result 和進度了
-            if not use_fallback_result:
-                # 如果 all_texts 有內容，代表至少有部分切片成功，可以組合成最終逐字稿
-                if all_texts:
-                    merged_transcript = "\n".join(all_texts).strip()
-
-                    # 將合併後的逐字稿寫入單一輸出檔案
-                    final_transcript_file = get_output_path(file_id, "_transcript.txt")
-                    with open(final_transcript_file, "w", encoding="utf-8") as f:
-                        f.write(merged_transcript)
-
-                    # 保底：語音識別階段最後至少要到 90%
-                    tasks_storage[task_id]["progress"] = max(tasks_storage[task_id]["progress"], 90.0)
-                    tasks_storage[task_id]["message"] = "語音識別完成"
-                    print(
-                        f"[DEBUG] 更新進度: {task_id}, 進度: {tasks_storage[task_id]['progress']}%, "
-                        f"訊息: 語音識別完成 (切片真實模式)..."
-                    )
-
-                    # 準備一個與原本 transcribe 結果相容的結構，方便後續標點流程沿用
-                    result = {
-                        "text": merged_transcript,
-                        "file_path": final_transcript_file,
-                        "language": detected_language or "zh",
-                    }
-
-        # 預設結果為原始 Whisper 逐字稿 / 切片合併後的逐字稿
-        final_transcript = result["text"]
-        final_transcript_file = result["file_path"]
-
-        # 如果有啟用標點處理才進行（預設關閉，避免影響主流程）
-        if settings.GEMINI_API_KEY and settings.ENABLE_PUNCTUATION:
-            # 步驟 3: 添加標點符號和分段
-            print(f"[DEBUG] 開始標點符號處理: task_id={task_id}, file_id={file_id}")
-            try:
-                # 切片轉錄完成後，先把進度拉到 95%，並明確告訴使用者現在進入標點符號階段
-                tasks_storage[task_id]["progress"] = 95.0
-                tasks_storage[task_id]["message"] = "正在呼叫 Gemini AI 模型進行標點符號處理，請稍後..."
-
-                # 💡 加入一個短暫的 sleep (例如 0.5~1秒)，確保前端輪詢能抓到這個 95%
-                await asyncio.sleep(2)
-
-                punctuation_service = get_punctuation_service()
-                print(f"[DEBUG] 標點符號服務初始化成功，開始處理逐字稿...")
-                formatted_result = punctuation_service.add_punctuation(result["text"], file_id)
-                
-                print(f"[INFO] 標點符號處理成功，處理後文字長度: {len(formatted_result['text'])} 字元")
-                
-                # 使用處理後的逐字稿作為最終結果（進度 100% 與完成訊息在函式結尾統一設定）
-                final_transcript = formatted_result["text"]
-                final_transcript_file = formatted_result["file_path"]
-            except Exception as e:
-                # 如果標點符號處理失敗，記錄錯誤但不中斷流程，繼續使用原始逐字稿
-                print(f"[ERROR] 標點符號處理失敗: {str(e)}")
-                import traceback
-                traceback.print_exc()
-                print(f"[WARNING] 使用原始逐字稿繼續處理")
+        # 在背景執行緒中上傳檔案
+        loop = asyncio.get_event_loop()
         
-        # 更新任務狀態為完成
-        tasks_storage[task_id]["status"] = TaskStatus.COMPLETED
+        def upload_to_gemini():
+            """上傳檔案到 Gemini（同步函數）"""
+            import google.generativeai as genai
+            from app.config import settings
+            
+            genai.configure(api_key=settings.GEMINI_API_KEY)
+            print(f"[DEBUG] 正在上傳音訊到 Gemini: {audio_path}")
+            audio_file = genai.upload_file(path=audio_path)
+            return audio_file.name
+        
+        gemini_file_name = await loop.run_in_executor(None, upload_to_gemini)
+        
+        # 上傳完成，更新進度
         tasks_storage[task_id]["progress"] = 100.0
-        tasks_storage[task_id]["message"] = "✅ 逐字稿處理完成"
-        tasks_storage[task_id]["result"] = {
-            "transcript": final_transcript,
-            "transcript_file": final_transcript_file,
-            "language": result.get("language", "zh"),
-            "raw_transcript": result["text"]  # 保留原始逐字稿供參考
-        }
+        tasks_storage[task_id]["message"] = "✅ 上傳完成，準備開始轉錄"
+        tasks_storage[task_id]["status"] = TaskStatus.COMPLETED  # 標記為完成（上傳階段完成）
         
-        # 儲存逐字稿 ID（使用 file_id）
-        files_storage[file_id]["transcript_id"] = file_id
-        files_storage[file_id]["transcript"] = final_transcript
-        print(f"[INFO] 逐字稿處理完成: task_id={task_id}, file_id={file_id}")
+        # 儲存 Gemini 檔案名稱到任務狀態，供 SSE endpoint 使用
+        tasks_storage[task_id]["gemini_file_name"] = gemini_file_name
+        tasks_storage[task_id]["file_path"] = audio_path
+        
+        print(f"[INFO] Gemini 上傳完成: task_id={task_id}, gemini_file_name={gemini_file_name}")
+        print(f"[INFO] 轉錄將由 SSE endpoint 處理")
         
     except Exception as e:
         # 更新任務狀態為失敗
         tasks_storage[task_id]["status"] = TaskStatus.FAILED
         tasks_storage[task_id]["progress"] = 0.0
-        tasks_storage[task_id]["message"] = f"❌ 處理失敗: {str(e)}"
+        tasks_storage[task_id]["message"] = f"❌ 上傳失敗: {str(e)}"
         tasks_storage[task_id]["error"] = str(e)
         # 記錄錯誤
-        print(f"[ERROR] 處理任務失敗: task_id={task_id}, file_id={file_id}, error={str(e)}")
+        print(f"[ERROR] 上傳任務失敗: task_id={task_id}, file_id={file_id}, error={str(e)}")
         import traceback
         traceback.print_exc()
+        
+        # 嘗試清理 Gemini 檔案
+        if gemini_file_name:
+            try:
+                transcription_service = get_transcription_service()
+                transcription_service.cleanup_gemini_file(gemini_file_name)
+            except:
+                pass
 
 
 @router.post("/generate", response_model=GenerateResponse)
@@ -673,6 +408,214 @@ async def get_task_status(task_id: str):
         message=task.get("message"),
         result=task.get("result"),
         error=task.get("error")
+    )
+
+
+@router.get("/transcribe-stream/{task_id}")
+async def transcribe_stream(task_id: str):
+    """
+    SSE endpoint：即時串流轉錄結果
+    
+    Args:
+        task_id: 任務 ID
+        
+    Returns:
+        StreamingResponse: SSE 串流回應
+    """
+    if task_id not in tasks_storage:
+        raise HTTPException(status_code=404, detail=f"任務不存在: {task_id}")
+    
+    task = tasks_storage[task_id]
+    file_id = task.get("file_id")
+    
+    if not file_id or file_id not in files_storage:
+        raise HTTPException(status_code=404, detail="檔案不存在")
+    
+    file_info = files_storage[file_id]
+    file_path = file_info["file_path"]
+    
+    # 檢查是否已經上傳到 Gemini（從任務狀態中取得）
+    gemini_file_name_from_task = task.get("gemini_file_name")
+    
+    async def generate_stream():
+        """生成 SSE 事件流（簡化版：直接迭代生成器，避免 Thread + Queue 阻塞）"""
+        transcription_service = get_transcription_service()
+        gemini_file_name = task.get("gemini_file_name")
+        
+        try:
+            # 如果已經上傳完成，直接開始轉錄；否則等待上傳完成
+            if gemini_file_name:
+                # 已經上傳，發送開始轉錄事件
+                yield f"data: {json.dumps({'type': 'progress', 'message': '開始轉錄...'})}\n\n"
+                await asyncio.sleep(0.01)  # 強迫數據發送
+            else:
+                # 等待上傳完成
+                yield f"data: {json.dumps({'type': 'progress', 'message': '等待上傳完成...'})}\n\n"
+                await asyncio.sleep(0.01)  # 強迫數據發送
+                
+                # 輪詢直到上傳完成
+                max_wait = 60  # 最多等待 60 秒
+                wait_count = 0
+                while not gemini_file_name and wait_count < max_wait:
+                    await asyncio.sleep(1)
+                    if task_id in tasks_storage:
+                        gemini_file_name = tasks_storage[task_id].get("gemini_file_name")
+                        if gemini_file_name:
+                            yield f"data: {json.dumps({'type': 'progress', 'message': '上傳完成，開始轉錄...'})}\n\n"
+                            await asyncio.sleep(0.01)  # 強迫數據發送
+                            break
+                    wait_count += 1
+                
+                if not gemini_file_name:
+                    yield f"data: {json.dumps({'type': 'error', 'message': '上傳超時'})}\n\n"
+                    return
+            
+            # 🟢 重點：使用簡化的 Queue 邏輯，在執行緒中運行生成器，每次只讀取一個事件
+            event_queue = asyncio.Queue()
+            loop = asyncio.get_event_loop()
+            
+            def run_generator():
+                """在執行緒中運行生成器，將事件放入 queue"""
+                try:
+                    # 直接迭代生成器
+                    for event in transcription_service.transcribe_stream_with_file(
+                        gemini_file_name, file_id
+                    ):
+                        # 將事件放入 queue（使用線程安全的方式）
+                        loop.call_soon_threadsafe(event_queue.put_nowait, event)
+                    # 發送結束標記
+                    loop.call_soon_threadsafe(event_queue.put_nowait, None)
+                except Exception as e:
+                    # 發送錯誤事件
+                    error_event = {
+                        "type": "error",
+                        "message": f"轉錄失敗: {str(e)}",
+                        "gemini_file_name": gemini_file_name
+                    }
+                    loop.call_soon_threadsafe(event_queue.put_nowait, error_event)
+                    loop.call_soon_threadsafe(event_queue.put_nowait, None)
+            
+            # 在背景執行緒中啟動轉錄
+            import threading
+            thread = threading.Thread(target=run_generator, daemon=True)
+            thread.start()
+            
+            # 從 queue 中讀取事件並發送 SSE（每次只讀取一個，立即 yield 並 await）
+            print(f"[SSE] 開始從 queue 讀取事件，task_id={task_id}")
+            event_count = 0
+            while True:
+                # 等待事件（使用較短的超時時間）
+                try:
+                    event = await asyncio.wait_for(event_queue.get(), timeout=0.1)
+                except asyncio.TimeoutError:
+                    # 超時，繼續等待（避免阻塞）
+                    continue
+                
+                event_count += 1
+                if event_count <= 3 or event_count % 10 == 0:
+                    print(f"[SSE] 從 queue 讀取到事件 #{event_count}, 類型: {event.get('type') if event else 'None'}")
+                
+                # None 表示結束
+                if event is None:
+                    break
+                
+                event_type = event.get("type")
+                
+                if event_type == "progress":
+                    yield f"data: {json.dumps({'type': 'progress', 'message': event.get('message', '')})}\n\n"
+                    await asyncio.sleep(0.01)  # 🔴 關鍵：給予非同步循環喘息機會，強迫數據發送
+                
+                elif event_type == "chunk":
+                    # 文字片段 - 立即發送
+                    chunk_text = event.get("text", "")
+                    # 更新任務狀態中的逐字稿
+                    if "transcript_chunks" not in tasks_storage[task_id]:
+                        tasks_storage[task_id]["transcript_chunks"] = []
+                    tasks_storage[task_id]["transcript_chunks"].append(chunk_text)
+                    tasks_storage[task_id]["full_transcript"] = tasks_storage[task_id].get("full_transcript", "") + chunk_text
+                    
+                    # 構建 SSE 事件資料
+                    chunk_data = {'type': 'chunk', 'text': chunk_text}
+                    sse_message = f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
+                    
+                    # 添加調試日誌（僅記錄前幾個 chunk，避免日誌過多）
+                    chunk_count = len(tasks_storage[task_id]["transcript_chunks"])
+                    if chunk_count <= 3 or chunk_count % 10 == 0:
+                        print(f"[SSE] 發送 chunk #{chunk_count}, 長度: {len(chunk_text)} 字元, 預覽: {chunk_text[:50] if len(chunk_text) > 50 else chunk_text}")
+                    
+                    yield sse_message
+                    await asyncio.sleep(0.01)  # 🔴 關鍵：給予非同步循環喘息機會，強迫數據發送
+                
+                elif event_type == "complete":
+                    # 轉錄完成
+                    full_text = event.get("full_text", "")
+                    file_path_result = event.get("file_path", "")
+                    event_gemini_file_name = event.get("gemini_file_name")
+                    
+                    # 更新任務狀態
+                    tasks_storage[task_id]["status"] = TaskStatus.COMPLETED
+                    tasks_storage[task_id]["progress"] = 100.0
+                    tasks_storage[task_id]["message"] = "✅ 轉錄完成"
+                    tasks_storage[task_id]["result"] = {
+                        "transcript": full_text,
+                        "transcript_file": file_path_result,
+                        "language": "zh"
+                    }
+                    
+                    # 儲存逐字稿
+                    files_storage[file_id]["transcript_id"] = file_id
+                    files_storage[file_id]["transcript"] = full_text
+                    
+                    yield f"data: {json.dumps({'type': 'complete', 'full_text': full_text, 'file_path': file_path_result})}\n\n"
+                    await asyncio.sleep(0.01)  # 強迫數據發送
+                    
+                    # 清理 Gemini 檔案
+                    if event_gemini_file_name:
+                        transcription_service.cleanup_gemini_file(event_gemini_file_name)
+                    
+                    break
+                
+                elif event_type == "error":
+                    # 錯誤事件
+                    error_msg = event.get("message", "轉錄失敗")
+                    event_gemini_file_name = event.get("gemini_file_name")
+                    
+                    tasks_storage[task_id]["status"] = TaskStatus.FAILED
+                    tasks_storage[task_id]["error"] = error_msg
+                    
+                    yield f"data: {json.dumps({'type': 'error', 'message': error_msg})}\n\n"
+                    await asyncio.sleep(0.01)  # 強迫數據發送
+                    
+                    # 清理 Gemini 檔案
+                    if event_gemini_file_name:
+                        transcription_service.cleanup_gemini_file(event_gemini_file_name)
+                    
+                    break
+                    
+        except Exception as e:
+            # 發生未預期的錯誤
+            error_msg = f"轉錄過程發生錯誤: {str(e)}"
+            tasks_storage[task_id]["status"] = TaskStatus.FAILED
+            tasks_storage[task_id]["error"] = error_msg
+            
+            yield f"data: {json.dumps({'type': 'error', 'message': error_msg})}\n\n"
+            await asyncio.sleep(0.01)  # 強迫數據發送
+            
+            # 嘗試清理
+            if gemini_file_name:
+                try:
+                    transcription_service.cleanup_gemini_file(gemini_file_name)
+                except:
+                    pass
+    
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"  # 禁用 Nginx 緩衝
+        }
     )
 
 

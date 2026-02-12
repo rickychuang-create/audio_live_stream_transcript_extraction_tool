@@ -8,9 +8,8 @@ pydantic-settings>=2.6.0
 # 音訊處理
 moviepy==1.0.3
 
-# 語音轉文字
-# 注意：如果安裝失敗，請先執行: pip install --upgrade pip setuptools wheel
-openai-whisper>=20231117
+# 語音轉文字（已改用 Gemini API，不再需要本地 Whisper）
+# openai-whisper>=20231117  # 已移除，改用 Gemini 2.5 Flash API
 
 # LLM API 客戶端
 openai>=1.40.0
