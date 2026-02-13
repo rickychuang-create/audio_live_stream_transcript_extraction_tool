@@ -874,7 +874,19 @@ Mike 的口吻特征：
         # - 模板中只有 {transcript} 這個佔位符需要被實際替換成逐字稿內容
         # - 其他像 {標題}、{小標題} 等只是給模型看的示意結構，因此不應該被 Python 當成變數解析
         # - 使用 replace 只針對 {transcript} 做替換，保留其餘大括號原樣，避免 KeyError 等問題
-        full_prompt = template.replace("{transcript}", transcript)
+        base_prompt = template.replace("{transcript}", transcript or "")
+        
+        # 若模板本身沒有 {transcript} 佔位符（例如 COMMUNITY_POST），
+        # 則在模板後面主動附上逐字稿全文，讓模型一定能看到實際內容。
+        if "{transcript}" not in template and transcript:
+            full_prompt = (
+                f"{base_prompt}\n\n"
+                "====================\n"
+                "【逐字稿全文】\n"
+                f"{transcript}\n"
+            )
+        else:
+            full_prompt = base_prompt
         
         return full_prompt
     

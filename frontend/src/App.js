@@ -334,6 +334,12 @@ function App() {
 
     try {
       setError(null);
+      /**
+       * 先設置一個暫時的 generatingTask，讓「文案生成中」卡片可以立刻顯示
+       * 等後端回傳真正的 task_id 後再覆蓋
+       */
+      setGeneratingTask('pending');
+
       const transcriptIdToUse = transcriptId || currentFileId;
       // 使用檔案上傳流程專用的格式清單
       const response = await generateContent(transcriptIdToUse, fileSelectedFormats);
@@ -344,6 +350,8 @@ function App() {
     } catch (err) {
       setError(`生成失敗: ${err.message}`);
       console.error('生成錯誤:', err);
+      // 發生錯誤時清除 generatingTask，隱藏「文案生成中」提示
+      setGeneratingTask(null);
     }
   };
 
@@ -369,6 +377,8 @@ function App() {
 
     try {
       setError(null);
+      // 同樣先設置暫時的 generatingTask，讓提示卡片立刻顯示
+      setGeneratingTask('pending');
 
       // 呼叫後端新 API，這裡假設後端回傳結構與 /generate 類似（含 task_id）
       // 呼叫後端新 API，這裡假設後端回傳結構與 /generate 類似（含 task_id）
@@ -386,6 +396,7 @@ function App() {
     } catch (err) {
       setError(`生成失敗: ${err.message}`);
       console.error('手動逐字稿生成錯誤:', err);
+      setGeneratingTask(null);
     }
   };
 
