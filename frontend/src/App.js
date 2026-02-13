@@ -26,6 +26,9 @@ import {
  */
 
 function App() {
+  // 前端上傳階段的最大進度（其餘 10% 留給後端 → Gemini 上傳顯示）
+  const UPLOAD_FRONTEND_MAX = 90;
+
   // 狀態管理
   const [currentFileId, setCurrentFileId] = useState(null);
   const [currentTranscript, setCurrentTranscript] = useState(null);
@@ -92,11 +95,15 @@ function App() {
       setUploadCompleted(false);
       
       const response = await uploadFile(file, (progress) => {
-        setUploadProgress(progress);
+        // 將瀏覽器 → 後端上傳階段限制在 0~UPLOAD_FRONTEND_MAX％
+        // 避免先顯示 100% 再退回 90% 的視覺跳動
+        const mappedProgress = Math.min(progress, UPLOAD_FRONTEND_MAX);
+        setUploadProgress(mappedProgress);
       });
       
       setCurrentFileId(response.file_id);
-      setUploadProgress(90); // 檔案上傳到後端完成，設為 90%（剩餘 10% 留給 Gemini 上傳）
+      // 檔案上傳到後端完成，進度條維持在 UPLOAD_FRONTEND_MAX（例如 90%）
+      setUploadProgress(UPLOAD_FRONTEND_MAX);
       setUploadCompleted(false); // 尚未完成（等待 Gemini 上傳完成）
       
       // 自動開始處理（不隱藏上傳進度條）
@@ -657,19 +664,34 @@ function App() {
           </div>
         )}
 
-        {/* 文案生成中提示
-            說明：
-            - 依照需求，取消顯示 AI 生成進度條，因為無法精準預測生成速度
-            - 當有 generatingTask 時，在當前 Tab 顯示簡單的「文案生成中，請稍後...」提示
-            - 生成完成後，由 pollTaskStatus 將結果寫入對應的 results state，並清除 generatingTask，提示自然消失 */}
-        {generatingTask && inputMode === 'file' && (
-          <div className="card">
-            <h2>✍️ 文案生成中，請稍後...</h2>
-          </div>
-        )}
-        {generatingTask && inputMode === 'transcript' && (
-          <div className="card">
-            <h2>✍️ 文案生成中，請稍後...</h2>
+        {/* 文案生成中提示（優化版：帶動畫的漂亮卡片） */}
+        {generatingTask && (
+          <div className="card generating-card">
+            <div className="generating-header">
+              <div className="generating-icon">✍️</div>
+              <div className="generating-texts">
+                <div className="generating-title">
+                  AI 正在醞釀你的文案…
+                </div>
+                <div className="generating-subtitle">
+                  依照逐字稿內容整理重點與文案，通常需要 10～20 秒，請稍候片刻
+                </div>
+              </div>
+            </div>
+
+            <div className="generating-body">
+              {/* 模擬進度的亮光條動畫（非真實進度） */}
+              <div className="generating-progress-bar">
+                <div className="generating-progress-fill" />
+              </div>
+
+              {/* 跳動的三個點，營造等待感 */}
+              <div className="generating-dots">
+                <span />
+                <span />
+                <span />
+              </div>
+            </div>
           </div>
         )}
 
